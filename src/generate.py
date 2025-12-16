@@ -82,11 +82,11 @@ def work(df, idx):
 
     global tag
     if tag:
-        tag = "-" + tag
+        tag_postfix = "-" + tag
     else:
         tag = ""
     os.makedirs("outputs/combinations/", exist_ok=True)
-    with open(f"outputs/combinations/{idx}{tag}.jsonl", "a") as f:
+    with open(f"outputs/combinations/{idx}{tag_postfix}.jsonl", "a") as f:
         for i, ex in enumerate(all_examples):
             save(f, ex, topic, intent, strength, style)
             # print(f"Ex {i}.\nSystem Message:\n{ex.system_message}\n"
@@ -137,7 +137,7 @@ if __name__ == "__main__":
         raise ValueError(f"Invalid slice: {rows_str}, '{sample_file}' only has {len(df)} data rows")
     if not end_idx:
         end_idx = len(df)
-    end_idx = max(end_idx, len(df))
+    end_idx = min(end_idx, len(df))
     
     print(args.sample_file)
     print(start_idx, end_idx)

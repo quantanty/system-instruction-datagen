@@ -27,6 +27,10 @@ class Example(BaseModel):
 
 class Examples(BaseModel):
     examples: List[Example]
+    
+class Review(BaseModel):
+    explanation: str
+    is_self_contained: bool
 
 
 def save(file, example, topic, intent, strength, style):
@@ -42,6 +46,36 @@ def save(file, example, topic, intent, strength, style):
     }
     line = json.dumps(obj) + "\n"
     file.write(line)
+    
+CHECK_SELF_CONTAINED_PROMPT = """You are analyzing a user message from a training example.
+The upstream generator that produced this example is lazy and often leaves user messages with missing or implicit context.
+Your job is to classify the user message into self-contained and not self-contained categories.
+
+If the user message misses context, it is not self-contained.
+Example:
+The message "I have this paragraph in a textbook and I need help summarizing it. Can you do that?" is NOT self-contained because it asks about the paragraph but it doesn't provide the paragraph above or below.
+The message "I have this paragraph in a textbook and I need help summarizing it. Can you do that?" asks for help summarizing a paragraph from a textbook. However, it doesn't provide the text itself. Therefore, it’s not self-contained.
+
+# The messages (JSON):
+
+{example_json}
+
+# Output format:
+{{
+    "explanation": "...",
+    "is_self_contained": true or false,
+}}
+
+# Begin review:
+"""
+
+def check_self_contained(example):
+    ex_json = example.model_dump_json(indent=4)
+    prompt = CHECK_SELF_CONTAINED_PROMPT.format(example_json=ex_json)
+    resp = llm_check.invoke(prompt)
+    assert isinstance(resp, Review)
+    print(resp)
+    return resp.is_self_contained, resp.explanation
 
 def dummy_gen(comb, n_samples):
     examples: list[Example] = []
@@ -49,14 +83,16 @@ def dummy_gen(comb, n_samples):
         examples.append(Example(system_message="system message ...", user_message="user message ..."))
     return Examples(examples=examples)
 
-def generate_examples(comb, n_examples):
+def generate_examples(comb, n_examples, explanation_str):
+    explanation_str = "\n=== SELF-CONTAINED MESSAGE ===\n" + explanation_str + "\n"
     topic, intent, strength, style = comb
     prompt = GEN_PROMPT.format(
         constraint_strength_description=STRENGTH_WORDINGS[strength],
         topic_description=TOPIC_WORDINGS[topic],
         user_intent_description=INTENT_WORDINGS[intent],
         style_description=STYLE_WORDINGS[style],
-        n_examples=n_examples
+        n_examples=n_examples,
+        check_self_contained_explanation=explanation_str
     )
     assert llm
     resp = llm.invoke(prompt)
@@ -73,11 +109,24 @@ def work(df, idx):
     comb = (topic, intent, strength, style)
     
     all_examples = []
+    explanations = []
     n_todo = n_samples
     while n_todo > 0:
-        examples = generate_examples(comb, min(5, n_todo))
-        n_todo -= len(examples)
-        all_examples += examples
+        explanation_str = ""
+        for ex, explanation in explanations:
+            explanation_str += f"The message \"{ex.user_message}\" is not self-contained. {explanation}"
+            
+        examples = generate_examples(comb, min(5, n_todo), explanation_str)
+        n_accepted = 0
+        for ex in examples:
+            is_self_contained, explanation = check_self_contained(ex)
+            if is_self_contained:
+                all_examples.append(ex)
+                n_accepted += 1
+            else:
+                if len(explanations) < 5:
+                    explanations.append((ex, explanation))
+        n_todo -= n_accepted
 
 
     global tag
@@ -144,12 +193,14 @@ if __name__ == "__main__":
     print(args.tag)
     tag = args.tag
     
-    global llm
+    global llm, llm_check
     llm = ChatOpenAI(
         model=os.getenv("MODEL_NAME"), # type: ignore
         api_key=os.getenv("API_KEY"), # type: ignore
         base_url=os.getenv("BASE_URL"),
-    ).with_structured_output(Examples)
+    )
+    llm_check = llm.with_structured_output(Review)
+    llm = llm.with_structured_output(Examples)
 
     for i in range(start_idx, end_idx):
         work(df, i)

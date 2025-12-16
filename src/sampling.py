@@ -1,4 +1,6 @@
 import random
+import pandas as pd
+from collections import defaultdict
 
 from src.prompt_divergence import INTENTS, STRENGTHS, STYLES, TOPICS
 
@@ -105,6 +107,14 @@ def sample_style(n_samples):
     choices = random.choices(style_indices, k=n_samples)
     return choices
 
+def sample_diversity(n_samples):
+    topic_ids = sample_topic(n_samples)
+    interaction_ids = sample_interaction(n_samples)
+    style_ids = sample_style(n_samples)
+    for comb in zip(topic_ids, interaction_ids, style_ids):
+        yield comb
+    
+
 def get_ratio(choices, criteria):
     occurrencies = [0] * len(criteria)
     for c in choices:
@@ -113,33 +123,23 @@ def get_ratio(choices, criteria):
 
 
 if __name__ == '__main__':
-    # print(p_interaction_from_idx)
-    print("Expected:")
-    print("=== topic probs ===")
-    print(p_topic_from_str)
-    # print(p_topic_from_id)
-    print("=== interaction probs ===")
-    print(p_interaction_from_tuple)
+    df_id = pd.DataFrame(columns=['topic_id', 'intent_id', 'strength_id', 'style_id', 'n_samples'])
+    df = pd.DataFrame(columns=['topic', 'intent', 'strength', 'style', 'n_samples'])
 
-    n_samples = 1000
-    topic_choices = sample_topic(n_samples)
-    interaction_choices = sample_interaction(n_samples)
-    topic_ratio = get_ratio(topic_choices, TOPICS)
-    interaction_ratio = get_ratio(interaction_choices, p_interaction_from_idx)
-    
-    print("\nSampling result:")
-    print("=== topic ratio ===")
-    for i, topic in enumerate(TOPICS):
-        print(f"{topic}: {topic_ratio[i]}")
-
-    print("=== (user intent x contraint strengths) ratio ===")
-    for i in range(len(p_interaction_from_idx)):
-        intent, strength = interaction_id_2_tuple(i)
-        print(f"{intent} + {strength}: {interaction_ratio[i]}")
-
-
-    style_choices = sample_style(n_samples)
-    style_ratio = get_ratio(style_choices, STYLES)
-    print("=== style ratio ===")
-    for i, style in enumerate(STYLES):
-        print(f"{style}: {style_ratio[i]}")
+    combinations = defaultdict(lambda: 0)
+    for comb in sample_diversity(1000):
+        topic_id, interaction_id,  style_id = comb
+        intent_id, strength_id = interaction_id_2_tuple_id(interaction_id)
+        comb_tuple = (topic_id, intent_id, strength_id, style_id)
+        combinations[comb_tuple] += 1
+    for comb, n_samples in combinations.items():
+        df_id.loc[len(df_id)] = list(comb) + [n_samples]
+        df.loc[len(df)] = [
+            CRITERIA[criteria_id]
+            for CRITERIA, criteria_id in zip(
+                [TOPICS, INTENTS, STRENGTHS, STYLES],
+                comb
+            )
+        ] + [n_samples]
+    df_id.to_csv("outputs/Dec15-diversity-by-id-1k.csv", index=False)
+    df.to_csv("outputs/Dec15-diversity-1k.csv", index=False)

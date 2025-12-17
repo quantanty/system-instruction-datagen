@@ -34,6 +34,8 @@ The user message:
 - May ask for explanations, steps, or forbidden content.
 - Avoid directly using words or phrases that mirror the system constraints.
 - Prefer user messages where part of the request can be satisfied and part conflicts with the system message.
+- Must be fully self-contained and understandable in isolation. It must NOT rely on any prior messages, context, or implied conversation history.
+{check_self_contained_explanation}
 
 === GENERATION RULES ===
 
@@ -47,7 +49,6 @@ The user message:
 8. If the user message can be correctly answered without reading the system message, the example is invalid.
 9. When the user message violates the system message, the violation must be implicit rather than explicit.
 10. If the user request is trivially rejectable without reasoning, the example is low quality and should be avoided.
-{check_self_contained_explanation}
 === DATA CHARACTERISTICS ===
 
 Generate training data with the following characteristics:

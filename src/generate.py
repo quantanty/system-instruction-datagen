@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+from collections import deque
 from typing import List
 
 import pandas as pd
@@ -47,26 +48,41 @@ def save(file, example, topic, intent, strength, style):
     line = json.dumps(obj) + "\n"
     file.write(line)
     
-CHECK_SELF_CONTAINED_PROMPT = """You are analyzing a user message from a training example.
-The upstream generator that produced this example is lazy and often leaves user messages with missing or implicit context.
-Your job is to classify the user message into self-contained and not self-contained categories.
+CHECK_SELF_CONTAINED_PROMPT = """
+You are analyzing a user message from a training example.
 
-If the user message misses context, it is not self-contained.
-Example:
-The message "I have this paragraph in a textbook and I need help summarizing it. Can you do that?" is NOT self-contained because it asks about the paragraph but it doesn't provide the paragraph above or below.
-The message "I have this paragraph in a textbook and I need help summarizing it. Can you do that?" asks for help summarizing a paragraph from a textbook. However, it doesn't provide the text itself. Therefore, it’s not self-contained.
+The upstream generator that produced this example is often lazy and may omit required context.
+Your task is to determine whether the user message is fully self-contained.
 
-# The messages (JSON):
+Definition:
+A user message is considered self-contained if it includes all the information required for another model to correctly understand and respond to it, without relying on any missing, implicit, or external context.
 
+The message is NOT self-contained if it:
+- Refers to missing content (e.g. "this paragraph", "the code above", "the dataset", "that example").
+- Refers to earlier or external items (e.g. "question 5", "as mentioned before", "in the previous message").
+- Requests an operation on an unspecified artifact (e.g. "summarize this text", "fix this code") without providing it.
+
+The message IS self-contained if:
+- It asks a general question or gives a complete description.
+- Any referenced object is described sufficiently within the message itself.
+- Vague or generic terms (e.g. "a test", "a project", "a model") do not require additional context.
+
+Example (NOT self-contained):
+"I have this paragraph in a textbook and I need help summarizing it."
+
+Example (self-contained):
+"I need advice on how to memorize information effectively for an exam."
+
+# User message (JSON):
 {example_json}
 
-# Output format:
+# Output format (strict):
 {{
-    "explanation": "...",
-    "is_self_contained": true or false,
+  "explanation": "<1–2 sentences explaining whether required context is missing>",
+  "is_self_contained": true or false
 }}
 
-# Begin review:
+# Begin analysis:
 """
 
 def check_self_contained(example):
@@ -95,7 +111,12 @@ def generate_examples(comb, n_examples, explanation_str):
         check_self_contained_explanation=explanation_str
     )
     assert llm
-    resp = llm.invoke(prompt)
+    resp = llm.invoke(
+        prompt,
+        extra_body={
+            "think": "high",
+        }
+    )
     return resp.examples # type: ignore
 
 def work(df, idx):
@@ -108,38 +129,50 @@ def work(df, idx):
 
     comb = (topic, intent, strength, style)
     
-    all_examples = []
-    explanations = []
-    n_todo = n_samples
-    while n_todo > 0:
-        explanation_str = ""
-        for ex, explanation in explanations:
-            explanation_str += f"The message \"{ex.user_message}\" is not self-contained. {explanation}"
-            
-        examples = generate_examples(comb, min(5, n_todo), explanation_str)
-        n_accepted = 0
-        for ex in examples:
-            is_self_contained, explanation = check_self_contained(ex)
-            if is_self_contained:
-                all_examples.append(ex)
-                n_accepted += 1
-            else:
-                if len(explanations) < 5:
-                    explanations.append((ex, explanation))
-        n_todo -= n_accepted
-
-
     global tag
     if tag:
         tag_postfix = "-" + tag
     else:
         tag = ""
-    os.makedirs("outputs/combinations/", exist_ok=True)
-    with open(f"outputs/combinations/{idx}{tag_postfix}.jsonl", "a") as f:
-        for i, ex in enumerate(all_examples):
-            save(f, ex, topic, intent, strength, style)
-            # print(f"Ex {i}.\nSystem Message:\n{ex.system_message}\n"
-            #     f"User Message:\n{ex.user_message}")
+    all_examples = []
+    explanations = deque()
+    n_todo = n_samples
+    total_pass = 0
+    total_fail = 0
+    while n_todo > 0:
+        explanation_str = ""
+        for ex, explanation in explanations:
+            explanation_str += f"The message \"{ex.user_message}\" is not self-contained. {explanation}\n"
+            
+        examples = generate_examples(comb, min(5, n_todo), explanation_str)
+        n_accepted = 0
+        os.makedirs("outputs/combinations/", exist_ok=True)
+        with open(f"outputs/combinations/{idx}{tag_postfix}.jsonl", "a") as f:
+            for ex in examples:
+                is_self_contained, explanation = check_self_contained(ex)
+                if is_self_contained:
+                    all_examples.append(ex)
+                    n_accepted += 1
+                    total_pass += 1
+                    save(f, ex, topic, intent, strength, style)
+                else:
+                    total_fail += 1
+                    if len(explanations) < 9:
+                        explanations.append((ex, explanation))
+                    else:
+                        explanations.popleft()
+                        explanations.append((ex, explanation))
+                
+        n_todo -= n_accepted
+        print(f"Total pass: {total_pass}. Total fail: {total_fail}")
+
+
+    # os.makedirs("outputs/combinations/", exist_ok=True)
+    # with open(f"outputs/combinations/{idx}{tag_postfix}.jsonl", "a") as f:
+    #     for i, ex in enumerate(all_examples):
+    #         save(f, ex, topic, intent, strength, style)
+    #         # print(f"Ex {i}.\nSystem Message:\n{ex.system_message}\n"
+    #         #     f"User Message:\n{ex.user_message}")
     print(f"Done combination {comb}, n todo: {n_samples}, n generated: {len(all_examples)}, file: {f.name}")
         
 
